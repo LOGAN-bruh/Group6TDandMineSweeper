@@ -16,7 +16,7 @@ LOTR Tower Defense is a 360-degree survival tower defense game where players mus
 ### Gameplay
 ![MockupForGameplay](https://github.com/LOGAN-bruh/Group6LOTRTD/blob/main/LOTRTowerDefense/design/Mockups/GameplayMockup.png)
 ### Upgrades Menu
-
+![MockupForUpgrades](https://github.com/LOGAN-bruh/Group6LOTRTD/blob/main/LOTRTowerDefense/design/Mockups/UpgradesMockup.png)
 ### Settings
 ![MockupForSettings](https://github.com/LOGAN-bruh/Group6TDandMineSweeper/blob/main/LOTRTowerDefense/design/Mockups/SettingsPage.drawio.png)
 ### Game Over

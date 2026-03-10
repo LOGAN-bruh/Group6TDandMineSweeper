@@ -1,3 +1,5 @@
+# Jamie Duersch and Quinn Dawson
+
 import math
 import pygame
 from bullet import Bullet   # only if Bullet is in separate file

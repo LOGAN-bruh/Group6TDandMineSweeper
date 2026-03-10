@@ -1,4 +1,4 @@
-# Quinn Dawson and Jamie Duersch
+# Quinn Dawson and Jamie Duersch | 3/10/26
 
 import pygame
 import math
@@ -67,29 +67,35 @@ class Enemy:
         # pygame.transform.flip(surface, flip_x, flip_y)
         draw_image = pygame.transform.flip(self.image, flip_x, False)
 
-        # 3. Handle the Y-offset for the Hobbit frame 2 if needed
-        draw_y = self.y
+        # 3. Position the sprite and draw it (use fixed center coordinates)
         draw_x = self.x
-        if self.name == "Hobbit" and self.frame_index == 1:
-            draw_y -= 3.5
-            draw_x -= -15
-        if self.name == "Knight" and self.frame_index == 1:
-            draw_y -= -10
-            draw_x -= -15
+        # shift running frame slightly upward (Knight barely moves, Hobbit/Mage move more)
+        if self.name == "Knight":
+            draw_y = self.y + 4 if self.frame_index == 1 else self.y  # Add +2 (or higher number) when running
+        else:
+            draw_y = self.y - 2 if self.frame_index == 1 else self.y
 
-        # 4. Draw to the screen
-        rect = draw_image.get_rect(center=(self.x, draw_y))
+        rect = draw_image.get_rect(center=(int(draw_x), int(draw_y)))
         win.blit(draw_image, rect)
 
         # -------- HEALTH BAR --------
         bar_width = 40
         bar_height = 6
 
-        health_ratio = self.health / self.max_health
-        current_width = bar_width * health_ratio
+        health_ratio = (self.health / self.max_health) if self.max_health > 0 else 0
+        health_ratio = max(0.0, min(1.0, health_ratio))
+        current_width = int(bar_width * health_ratio)
 
+        # Calculate sprite offset to keep health bar stable
+        sprite_offset = 0
+        if self.name == "Knight":
+            sprite_offset = 4 if self.frame_index == 1 else 0
+        else:
+            sprite_offset = -2 if self.frame_index == 1 else 0
+
+        # Keep the health bar stable by compensating for sprite offset
         bar_x = rect.centerx - bar_width // 2
-        bar_y = rect.top - 10
+        bar_y = rect.top - 12 - sprite_offset
 
         # background
         pygame.draw.rect(win, (200, 0, 0), (bar_x, bar_y, bar_width, bar_height))

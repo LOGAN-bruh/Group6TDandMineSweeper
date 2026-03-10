@@ -1,3 +1,5 @@
+# Quinn Dawson and Jamie Duersch
+
 import pygame
 import math
 import random

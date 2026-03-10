@@ -91,41 +91,10 @@ class Tower:
 
     def get_cannon_mouth(self):
         """
-        Calculate the position where bullets should spawn (cannon mouth).
-        Accounts for tower orientation and type.
+        Return the spawn position for projectiles. Use the tower's center so
+        projectiles appear to come from the middle of placed towers.
         """
-        # Determine if tower is flipped
-        flip_x = False
-        if self.center is not None and self.x < self.center[0]:
-            flip_x = True
-        
-        # Base offset varies by tower type
-        # These offsets represent the cannon mouth position relative to tower center
-        if self.tower_type == 1:  # Cannon
-            base_offset_x = 25
-            base_offset_y = 35
-        elif self.tower_type == 2:  # Fireball Mage
-            base_offset_x = 20
-            base_offset_y = 40
-        elif self.tower_type == 3:  # Ice Tower
-            base_offset_x = 15
-            base_offset_y = 30
-        elif self.tower_type == 4:  # Rapid Fire
-            base_offset_x = 30
-            base_offset_y = 32
-        else:
-            base_offset_x = 25
-            base_offset_y = 35
-        
-        # Flip the x offset if tower is on left side
-        if flip_x:
-            spawn_x = self.x - base_offset_x
-        else:
-            spawn_x = self.x + base_offset_x
-        
-        spawn_y = self.y + base_offset_y
-        
-        return spawn_x, spawn_y
+        return self.x, self.y
 
     def draw(self, win):
         if self.image:

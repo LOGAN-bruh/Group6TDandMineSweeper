@@ -1,3 +1,5 @@
+# Yicheng Deng and Logan Bywater | 3/12/26
+
 import pygame
 import math
 import random

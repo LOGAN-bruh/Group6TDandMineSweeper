@@ -1,5 +1,5 @@
 # Quinn Dawson and Jamie Duersch | 3/10/26
-
+# Yicheng Deng
 import pygame
 import math
 import random

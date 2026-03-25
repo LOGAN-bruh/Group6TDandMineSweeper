@@ -1,4 +1,6 @@
-# Yicheng Deng and Logan Bywater | 3/12/26
+# Lord of the Rings Tower Defense | 3/25/26
+
+# Yicheng Deng and Logan Bywater with UI and logic
 
 import pygame
 import math
@@ -76,6 +78,8 @@ TITLE_FONT = pygame.font.SysFont("Georgia", 48, bold=True)
 BUTTON_FONT = pygame.font.SysFont("Georgia", 28, bold=True)
 STAT_FONT = pygame.font.SysFont("Georgia", 20, bold=True)
 UPGRADE_FONT = pygame.font.SysFont("Georgia", 18)
+# Smaller font for compact button labels
+SMALL_BUTTON_FONT = pygame.font.SysFont("Georgia", 16)
 WIDTH, HEIGHT = 800, 800
 WIN = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Lord of the Rings Tower Defense | 2026")
@@ -228,11 +232,6 @@ BARRIERS = [
 def draw_barriers(win):
     # Barriers have been removed from the game
     pass
-#UPGRADES?
-#DIFFICULTY INCREASES? - done
-#ENEMY PATHFINDING AROUND BARRIERS?
-#ENEMY TYPES? (FAST LOW HEALTH, SLOW HIGH HEALTH, SPLIT ON DEATH, ETC)-done
-#PUT IN SPRITES
 
 def save_game(filename, game_state):
     """Atomically save game state to JSON file (writes to a temp file and renames).
@@ -319,8 +318,10 @@ class PauseButton:
         self.rect = pygame.Rect(x, y, w, h)
 
     def draw(self, win):
-        # Draw rounded button with || icon
-        pygame.draw.rect(win, (50, 50, 50), self.rect, border_radius=8)
+        # Draw semi-transparent rounded button with || icon for readability
+        s = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
+        s.fill((30, 30, 30, 170))
+        win.blit(s, (self.rect.x, self.rect.y))
         pygame.draw.rect(win, (200, 180, 100), self.rect, 2, border_radius=8)
         # draw pause icon
         bar_w = 8
@@ -696,11 +697,20 @@ def main(saved_game=None):
     TOWER_COST = 50
     base_range = 500
     base_cooldown = 0
-    BASE_FIRE_RATE = int(0.5 * FPS)  # frames between base shots (0.5 seconds)
-    BASE_DAMAGE = 1
+    BASE_FIRE_RATE = int(0.3 * FPS)  # frames between base shots (~0.3 seconds)
+    BASE_DAMAGE = 40
     base_level = 1  # Track base level (1-6)
+    # Legacy single-slot error fields (many places still set these). New code will
+    # transfer these into error_queue each frame so messages don't overlap.
     error_message = ""
     error_timer = 0
+    # Queue of active error/status messages shown on screen (each is dict with msg and timer)
+    error_queue = []
+    def push_error(msg, duration=90):
+        # Avoid flooding with identical consecutive messages
+        if len(error_queue) == 0 or error_queue[-1]["msg"] != msg:
+            error_queue.append({"msg": msg, "timer": duration})
+
     running = True
     upgrade_mode = False
     paused = False
@@ -874,10 +884,28 @@ def main(saved_game=None):
     button2_rect = pygame.Rect(WIDTH - 510, 10, 80, 40)
     # Panel selection state for upgrade-side-panel
     selected_panel_tower = None
+    selected_panel_prev = None
+    panel_scroll = 0.0
+    panel_scroll_target = 0.0
+    panel_dragging = False
+    panel_drag_info = {}
+    popup_open = False
+    popup_target = None
+    SCROLL_STEP = 36  # default scroll step in pixels
     while running:
         dt_ms = CLOCK.tick(int(FPS * game_speed))  # Apply speed multiplier and capture delta ms
-        elapsed_time_ms += dt_ms
-        
+        # Freeze timer while upgrade panel is open or game is paused
+        if not upgrade_mode and not paused:
+            elapsed_time_ms += dt_ms
+        # Smooth panel scrolling toward target
+        # small easing for smooth feel
+        scroll_diff = panel_scroll_target - panel_scroll
+        panel_scroll += scroll_diff * 0.18
+        if abs(scroll_diff) < 0.5:
+            panel_scroll = panel_scroll_target
+        # Compute current max towers allowance based on base level (each base level grants +2 towers)
+        current_max_towers = MAX_TOWERS + (base_level - 1) * 2
+
         # --- CLEAR AND SETUP ---
         WIN.fill(GRASS1)
         
@@ -889,7 +917,29 @@ def main(saved_game=None):
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     paused = True
-                    
+            # Mouse wheel scrolling support for the upgrade panel (disabled for non-scrolling UI)
+            if event.type == pygame.MOUSEWHEEL and upgrade_mode:
+                # Scrolling disabled; ignore mouse wheel
+                pass
+
+            # Handle mouse button up to stop dragging the scrollbar
+            if event.type == pygame.MOUSEBUTTONUP:
+                panel_dragging = False
+
+            # If dragging the scrollbar thumb, update scroll target on mouse motion
+            if event.type == pygame.MOUSEMOTION and panel_dragging:
+                mx, my = event.pos
+                info = panel_drag_info
+                sr = info.get("scrollbar_rect")
+                thumb_h = info.get("thumb_h", 20)
+                max_scroll = info.get("max_scroll", 0)
+                # compute position relative to scrollbar top minus click offset
+                rel = my - sr.y - info.get("click_offset", 0)
+                rel = max(0, min(rel, sr.h - thumb_h))
+                # map to scroll target
+                denom = max(1, sr.h - thumb_h)
+                panel_scroll_target = int((rel / denom) * max_scroll) if max_scroll > 0 else 0
+
             if paused:
                 pause_choice = pause_menu(money, killcount, difficulty_level, base_level, int(elapsed_time_ms//1000))
                 if pause_choice == "resume":
@@ -932,6 +982,7 @@ def main(saved_game=None):
             if event.type == pygame.MOUSEBUTTONDOWN and not paused:
                 x, y = pygame.mouse.get_pos()
 
+
                 # Pause button clicked -> show pause menu immediately
                 if pause_button.is_clicked((x, y)):
                     pause_choice = pause_menu(money, killcount, difficulty_level, base_level, int(elapsed_time_ms//1000))
@@ -973,31 +1024,265 @@ def main(saved_game=None):
                     upgrade_mode = not upgrade_mode
                     selected_panel_tower = None
                 
-                elif speed_minus_button.collidepoint(x, y):
+                elif speed_minus_button.collidepoint(x, y) and not upgrade_mode:
                     game_speed = max(0.5, game_speed - 0.25)
                 
-                elif speed_plus_button.collidepoint(x, y):
+                elif speed_plus_button.collidepoint(x, y) and not upgrade_mode:
                     game_speed = min(4.0, game_speed + 0.25)
 
                 elif upgrade_mode:
                     # Upgrade side-panel rect
                     panel_rect = pygame.Rect(WIDTH-220, 80, 210, HEIGHT-160)
+                    # If a popup is open, handle its buttons first
+                    if popup_open and popup_target is not None:
+                        px_w, px_h = 520, 360
+                        px_x = WIDTH//2 - px_w//2 - 100
+                        px_y = HEIGHT//2 - px_h//2
+                        popup_rect = pygame.Rect(px_x, px_y, px_w, px_h)
+                        # popup upgrade button
+                        pb_w = 100
+                        pb_h = 36
+                        pb_x = px_x + px_w - pb_w - 14
+                        pb_y = px_y + px_h - pb_h - 14
+                        popup_upgrade = pygame.Rect(pb_x, pb_y, pb_w, pb_h)
+                        # If click inside popup, check buttons
+                        if popup_rect.collidepoint(x, y):
+                            # compute popup button rects (mirror drawing)
+                            pb_h = 36
+                            upgrade_rect = pygame.Rect(px_x + 12, px_y + px_h - pb_h - 14, px_w - 24, pb_h)
+                            row2_y = upgrade_rect.y - pb_h - 8
+                            row1_y = row2_y - pb_h - 8
+                            col_w = (px_w - 36)//2
+                            delete_rect = pygame.Rect(px_x + 12, row1_y, col_w, pb_h)
+                            downgrade_rect = pygame.Rect(px_x + 24 + col_w, row1_y, col_w, pb_h)
+                            type1_rect = pygame.Rect(px_x + 12, row2_y, col_w, pb_h)
+                            type2_rect = pygame.Rect(px_x + 24 + col_w, row2_y, col_w, pb_h)
+                            # Delete
+                            if delete_rect.collidepoint(x, y):
+                                if popup_target[0] == "base":
+                                    push_error("Cannot delete base!", 60)
+                                else:
+                                    tidx = popup_target[1]
+                                    if isinstance(tidx, int) and 0 <= tidx < len(towers):
+                                        tower = towers.pop(tidx)
+                                        refund = getattr(tower, 'cost', TOWER_COST) // 2
+                                        money += refund
+                                        push_error(f"Tower #{tidx+1} deleted. Refunded ${refund}.", 90)
+                                        selected_panel_tower = None
+                                popup_open = False
+                                popup_target = None
+                                continue
+                            # Downgrade
+                            if downgrade_rect.collidepoint(x, y):
+                                if popup_target[0] == "base":
+                                    push_error("Cannot downgrade base!", 60)
+                                else:
+                                    tidx = popup_target[1]
+                                    if isinstance(tidx, int) and 0 <= tidx < len(towers):
+                                        tower = towers[tidx]
+                                        if tower.level > 1:
+                                            refund = ((tower.level - 1) * 75) // 2
+                                            target_level = tower.level - 1
+                                            base_stats = tower.TOWER_TYPES.get(tower.tower_type, None)
+                                            if base_stats:
+                                                tower.damage = base_stats.get('damage', tower.damage)
+                                                tower.range = base_stats.get('range', tower.range)
+                                                tower.base_cooldown = base_stats.get('cooldown', tower.base_cooldown)
+                                                tower.cost = base_stats.get('cost', tower.cost)
+                                                tower.penetration = base_stats.get('penetration', tower.penetration)
+                                                tower.level = 1
+                                                for _ in range(max(0, target_level-1)):
+                                                    tower.upgrade()
+                                            else:
+                                                tower.level = max(1, tower.level - 1)
+                                            money += refund
+                                            push_error(f"Downgraded Tower #{tidx+1}. Refunded ${refund}.", 90)
+                                        else:
+                                            push_error("Tower is at minimum level!", 60)
+                                popup_open = False
+                                popup_target = None
+                                continue
+                            # Type change
+                            if type1_rect.collidepoint(x, y) or type2_rect.collidepoint(x, y):
+                                if popup_target[0] == "base":
+                                    push_error("Cannot change base type!", 60)
+                                else:
+                                    tidx = popup_target[1]
+                                    if isinstance(tidx, int) and 0 <= tidx < len(towers):
+                                        tower = towers[tidx]
+                                        if type1_rect.collidepoint(x, y):
+                                            tower.tower_type = 1
+                                        else:
+                                            tower.tower_type = 2
+                                        if tower.level <= len(TOWER_IMAGES):
+                                            tower.image = TOWER_IMAGES[tower.level - 1]
+                                        push_error(f"Tower type set to {tower.tower_type}", 60)
+                                popup_open = False
+                                popup_target = None
+                                continue
+                            # Upgrade action
+                            if upgrade_rect.collidepoint(x, y):
+                                if popup_target[0] == "base":
+                                    base_upgrade_cost = base_level * 100
+                                    if money >= base_upgrade_cost and base_level < 6:
+                                        money -= base_upgrade_cost
+                                        base_level += 1
+                                        BASE_DAMAGE = int(BASE_DAMAGE * 1.5)
+                                        BASE_FIRE_RATE = max(10, int(BASE_FIRE_RATE * 0.8))
+                                        base_range += 50
+                                        push_error(f"Base upgraded to level {base_level}!", 60)
+                                    elif base_level >= 6:
+                                        push_error("Base is at maximum level!", 60)
+                                    else:
+                                        push_error(f"Need ${base_upgrade_cost} to upgrade base!", 60)
+                                else:
+                                    tidx = popup_target[1]
+                                    if isinstance(tidx, int) and 0 <= tidx < len(towers):
+                                        tower = towers[tidx]
+                                        upgrade_cost = tower.level * 75
+                                        if money >= upgrade_cost and tower.level < 3:
+                                            money -= upgrade_cost
+                                            tower.upgrade()
+                                            if tower.level <= len(TOWER_IMAGES):
+                                                tower.image = TOWER_IMAGES[tower.level - 1]
+                                            push_error(f"Tower upgraded to level {tower.level}!", 60)
+                                        elif tower.level >= 3:
+                                            push_error("Tower is at maximum level!", 60)
+                                        else:
+                                            push_error(f"Need ${upgrade_cost} to upgrade tower!", 60)
+                                popup_open = False
+                                popup_target = None
+                                continue
+                            # clicked inside popup but not on known buttons
+                            pass
+                        else:
+                            # clicked outside popup -> close it
+                            popup_open = False
+                            popup_target = None
+                        continue
                     # If clicked inside the panel, handle selection or actions
                     if panel_rect.collidepoint(x, y):
-                        # compute which tower entry was clicked
-                        rel_y = y - (panel_rect.y + 36)
-                        idx = rel_y // 56
-                        if 0 <= idx < len(towers):
-                            selected_panel_tower = idx
-                            # consume the click
+                        # base header button area: open base popup
+                        base_button_rect = pygame.Rect(panel_rect.x + panel_rect.width - 70, panel_rect.y + 8, 58, 22)
+                        if base_button_rect.collidepoint(x, y):
+                            popup_open = True
+                            popup_target = ("base", None)
                             continue
-                        # if a tower is already selected, check action buttons
-                        if selected_panel_tower is not None and 0 <= selected_panel_tower < len(towers):
-                            upgrade_btn = pygame.Rect(panel_rect.x+10, panel_rect.y+panel_rect.height-120, panel_rect.width-20, 40)
-                            type1_btn = pygame.Rect(panel_rect.x+10, panel_rect.y+panel_rect.height-60, (panel_rect.width-30)//2, 40)
-                            type2_btn = pygame.Rect(panel_rect.x+20+(panel_rect.width-30)//2, panel_rect.y+panel_rect.height-60, (panel_rect.width-30)//2, 40)
+                        # compute dynamic entry height so panel can fit many towers
+                        entries_count = len(towers)
+                        action_space = 200
+                        panel_y_local = panel_rect.y + 36
+                        available_h = max(0, panel_rect.height - 36 - action_space)
+                        panel_entry_h_local = max(28, available_h // max(1, max(1, entries_count)))
+                        # Precompute action button rects and prioritize them so buttons remain clickable even when many entries are present
+                        btn_x = panel_rect.x + 15
+                        btn_w = panel_rect.width - 30
+                        delete_btn = pygame.Rect(btn_x, panel_rect.y + panel_rect.height - 180, btn_w, 44)
+                        downgrade_btn = pygame.Rect(btn_x, panel_rect.y + panel_rect.height - 130, btn_w, 44)
+                        upgrade_btn = pygame.Rect(btn_x, panel_rect.y + panel_rect.height - 80, btn_w, 44)
+                        type1_btn = pygame.Rect(btn_x, panel_rect.y + panel_rect.height - 40, (btn_w-8)//2, 34)
+                        type2_btn = pygame.Rect(btn_x + (btn_w+8)//2, panel_rect.y + panel_rect.height - 40, (btn_w-8)//2, 34)
+                        # If a selected entry exists and the click hits one of the action buttons, handle it immediately (only towers)
+                        if isinstance(selected_panel_tower, int) and (delete_btn.collidepoint(x, y) or downgrade_btn.collidepoint(x, y) or upgrade_btn.collidepoint(x, y) or type1_btn.collidepoint(x, y) or type2_btn.collidepoint(x, y)):
+                            # Delete
+                            if delete_btn.collidepoint(x, y):
+                                if isinstance(selected_panel_tower, int) and 0 <= selected_panel_tower < len(towers):
+                                    tower = towers.pop(selected_panel_tower)
+                                    refund = getattr(tower, 'cost', TOWER_COST) // 2
+                                    money += refund
+                                    push_error(f"Tower #{selected_panel_tower+1} deleted. Refunded ${refund}.", 90)
+                                    selected_panel_tower = None
+                                else:
+                                    push_error("Cannot delete base!", 60)
+                                continue
+                            # Downgrade
+                            if downgrade_btn.collidepoint(x, y):
+                                if isinstance(selected_panel_tower, int) and 0 <= selected_panel_tower < len(towers):
+                                    tower = towers[selected_panel_tower]
+                                    if tower.level > 1:
+                                        refund = ((tower.level - 1) * 75) // 2
+                                        target_level = tower.level - 1
+                                        base_stats = tower.TOWER_TYPES.get(tower.tower_type, None)
+                                        if base_stats:
+                                            tower.damage = base_stats.get('damage', tower.damage)
+                                            tower.range = base_stats.get('range', tower.range)
+                                            tower.base_cooldown = base_stats.get('cooldown', tower.base_cooldown)
+                                            tower.cost = base_stats.get('cost', tower.cost)
+                                            tower.penetration = base_stats.get('penetration', tower.penetration)
+                                            tower.level = 1
+                                            for _ in range(max(0, target_level-1)):
+                                                tower.upgrade()
+                                        else:
+                                            tower.level = max(1, tower.level - 1)
+                                        money += refund
+                                        push_error(f"Downgraded Tower #{selected_panel_tower+1}. Refunded ${refund}.", 90)
+                                    else:
+                                        push_error("Tower is at minimum level!", 60)
+                                else:
+                                    push_error("Cannot downgrade base!", 60)
+                                continue
+                            # Upgrade (from action buttons)
                             if upgrade_btn.collidepoint(x, y):
-                                tower = towers[selected_panel_tower]
+                                # Only towers can be upgraded from the panel actions; base upgrades happen via popup
+                                if isinstance(selected_panel_tower, int) and 0 <= selected_panel_tower < len(towers):
+                                    tower = towers[selected_panel_tower]
+                                    upgrade_cost = tower.level * 75
+                                    if money >= upgrade_cost and tower.level < 3:
+                                        money -= upgrade_cost
+                                        tower.upgrade()
+                                        if tower.level <= len(TOWER_IMAGES):
+                                            tower.image = TOWER_IMAGES[tower.level - 1]
+                                        push_error(f"Tower upgraded to level {tower.level}!", 60)
+                                    elif tower.level >= 3:
+                                        push_error("Tower is at maximum level!", 60)
+                                    else:
+                                        push_error(f"Need ${upgrade_cost} to upgrade tower!", 60)
+                                else:
+                                    push_error("No tower selected to upgrade from panel.", 60)
+                                continue
+                            # Type change
+                            if type1_btn.collidepoint(x, y) or type2_btn.collidepoint(x, y):
+                                # Only towers can have their type changed from the panel
+                                if isinstance(selected_panel_tower, int) and 0 <= selected_panel_tower < len(towers):
+                                    tower = towers[selected_panel_tower]
+                                    if type1_btn.collidepoint(x, y):
+                                        tower.tower_type = 1
+                                    else:
+                                        tower.tower_type = 2
+                                    if tower.level <= len(TOWER_IMAGES):
+                                        tower.image = TOWER_IMAGES[tower.level - 1]
+                                        push_error(f"Tower type set to {tower.tower_type}", 60)
+                                continue
+                        # compute which entry was clicked using variable heights (towers only)
+                        rel_y = y - panel_y_local
+                        entries = [("tower", t) for t in towers]
+                        raw_heights = []
+                        for kind, t in entries:
+                            lvl = getattr(t, "level", 1)
+                            raw_heights.append(44 + (lvl - 1) * 22)
+                        total_raw = sum(raw_heights) if raw_heights else 1
+                        scale = min(1.0, available_h / total_raw) if total_raw > 0 else 1.0
+                        entry_heights = [max(28, int(h * scale)) for h in raw_heights]
+                        cum = 0
+                        idx = None
+                        for i, h in enumerate(entry_heights):
+                            if rel_y >= cum and rel_y < cum + h:
+                                idx = i
+                                break
+                            cum += h
+                        if idx is None:
+                            idx = -1
+                        # If clicking within a tower entry, handle sprite upgrade or open popup
+                        if 0 <= idx < len(towers):
+                            # compute top position using cumulative heights
+                            entry_top = panel_y_local + sum(entry_heights[:idx])
+                            h = entry_heights[idx]
+                            img_size = max(20, min(40, h - 12))
+                            sprite_rect = pygame.Rect(panel_rect.x + 6, entry_top + 5, img_size, img_size)
+                            # sprite click => immediate upgrade
+                            if sprite_rect.collidepoint(x, y):
+                                t_idx = idx
+                                tower = towers[t_idx]
                                 upgrade_cost = tower.level * 75
                                 if money >= upgrade_cost and tower.level < 3:
                                     money -= upgrade_cost
@@ -1012,19 +1297,14 @@ def main(saved_game=None):
                                 else:
                                     error_message = f"Need ${upgrade_cost} to upgrade tower!"
                                     error_timer = 60
+                                selected_panel_tower = t_idx
                                 continue
-                            elif type1_btn.collidepoint(x, y) or type2_btn.collidepoint(x, y):
-                                tower = towers[selected_panel_tower]
-                                if type1_btn.collidepoint(x, y):
-                                    tower.tower_type = 1
-                                else:
-                                    tower.tower_type = 2
-                                if tower.level <= len(TOWER_IMAGES):
-                                    tower.image = TOWER_IMAGES[tower.level - 1]
-                                error_message = f"Tower type set to {tower.tower_type}"
-                                error_timer = 60
-                                continue
-                        # clicked inside panel but not on actionable areas
+                            # otherwise, open detailed popup for this tower
+                            selected_panel_tower = idx
+                            popup_open = True
+                            popup_target = ("tower", selected_panel_tower)
+                            continue
+                        # Panel does not handle upgrade actions; all actions live in the popup. Consume the click.
                         continue
                     # If click was not in panel, fall back to map-based upgrade (legacy behavior)
                     # Handle upgrades in upgrade mode (map click)
@@ -1068,8 +1348,9 @@ def main(saved_game=None):
                                 break
 
                 elif can_place_tower(x, y) and not upgrade_mode:
-                    if len(towers) >= MAX_TOWERS:
-                        error_message = f"Tower limit reached ({MAX_TOWERS})"
+                    if len(towers) >= current_max_towers:
+                        current_max_towers = MAX_TOWERS + (base_level - 1) * 2
+                        error_message = f"Tower limit reached ({current_max_towers})"
                         error_timer = 90
                     else:
                         temp_tower = Tower(x, y, CENTER, tower_type=selected_tower_type, image=TOWER_IMAGES[0] if TOWER_IMAGES else None, bullet_image=FIREBALL_IMAGE)
@@ -1083,17 +1364,41 @@ def main(saved_game=None):
                             error_message = "Not Enough Money!"
                             error_timer = 60
 
+        # Ensure selected panel entry is visible after processing input (so user doesn't have to scroll to reach action buttons)
+        if upgrade_mode and selected_panel_tower != selected_panel_prev:
+            try:
+                panel_rect_tmp = pygame.Rect(WIDTH-220, 80, 210, HEIGHT-160)
+                entries_count_tmp = 1 + len(towers)
+                action_space_tmp = 200
+                available_h_tmp = max(0, panel_rect_tmp.height - 36 - action_space_tmp)
+                ENTRY_PREFERRED_H_tmp = 56
+                if entries_count_tmp * ENTRY_PREFERRED_H_tmp <= available_h_tmp:
+                    panel_entry_h_tmp = max(28, available_h_tmp // max(1, entries_count_tmp))
+                else:
+                    panel_entry_h_tmp = ENTRY_PREFERRED_H_tmp
+                max_scroll_tmp = max(0, entries_count_tmp * panel_entry_h_tmp - available_h_tmp)
+                if isinstance(selected_panel_tower, int):
+                    entry_idx_tmp = 1 + selected_panel_tower
+                else:
+                    entry_idx_tmp = None
+                if entry_idx_tmp is not None:
+                    top_tmp = entry_idx_tmp * panel_entry_h_tmp
+                    panel_scroll_target = max(0, min(max_scroll_tmp, int(top_tmp - (available_h_tmp - panel_entry_h_tmp)//2)))
+            except Exception:
+                pass
+            selected_panel_prev = selected_panel_tower
+
         # --- GAME LOGIC (only if not paused) ---
-        if not paused:
+        if not paused and not upgrade_mode:
             # Spawn enemies
-            # Difficulty scales with kills and elapsed time (every 30s increases difficulty)
-            difficulty_level = killcount // 10 + int(elapsed_time_ms // 30000)
+            # Difficulty scales with kills and elapsed time (slower growth: kills per 15 and every 60s)
+            difficulty_level = killcount // 15 + int(elapsed_time_ms // 60000)
             if difficulty_level > prev_difficulty:
                 error_message = f"Difficulty increased to {difficulty_level}!"
                 error_timer = 180
                 prev_difficulty = difficulty_level
-            multiplier = 1 + (difficulty_level * 0.08)
-            spawn_interval = max(90 - difficulty_level * 7, 10)
+            multiplier = 1 + (difficulty_level * 0.05)
+            spawn_interval = max(90 - difficulty_level * 5, 10)
 
             if not upgrade_mode:
                 spawn_timer += 1
@@ -1136,7 +1441,10 @@ def main(saved_game=None):
                     enemy.move()
                     enemy.animate()
                     if enemy.reached_base(BASE_RADIUS):
-                        base_health -= 1
+                        # damage per enemy type (percent points)
+                        DAMAGE_BY_NAME = {"Knight": 7, "Mage": 4, "Hobbit": 2}
+                        damage = DAMAGE_BY_NAME.get(getattr(enemy, 'name', None), 1)
+                        base_health -= damage
                         enemies.remove(enemy)
                     elif enemy.health <= 0:
                         enemies.remove(enemy)
@@ -1174,23 +1482,37 @@ def main(saved_game=None):
         # Draw Towers
         for idx, tower in enumerate(towers):
             tower.draw(WIN)
-            if upgrade_mode:
-                # Show tower level (dark text with light background for readability)
-                level_text = FONT.render(f"Lv.{tower.level}", True, (0, 0, 0))
-                level_bg = pygame.Rect(tower.x - 22, tower.y - 58, 44, 20)
-                pygame.draw.rect(WIN, (240,240,240), level_bg, border_radius=4)
-                WIN.blit(level_text, (level_bg.x + level_bg.width//2 - level_text.get_width()//2, level_bg.y + level_bg.height//2 - level_text.get_height()//2))
-                # Show tower index number inside a small dark circle for contrast
-                try:
-                    idx_str = str(idx+1)
-                    idx_surf = UPGRADE_FONT.render(idx_str, True, WHITE)
-                    circle_x = tower.x + int(20 * SIZE_SCALE)
-                    circle_y = tower.y - 40
-                    circle_r = max(10, int(12 * SIZE_SCALE))
-                    pygame.draw.circle(WIN, (30, 30, 30), (circle_x, circle_y), circle_r)
-                    WIN.blit(idx_surf, (circle_x - idx_surf.get_width()//2, circle_y - idx_surf.get_height()//2))
-                except Exception:
-                    pass
+
+        # Draw compact markers when in upgrade mode. Cluster close markers to declutter center
+        if upgrade_mode:
+            cluster_size = max(24, int(40 * SIZE_SCALE))
+            clusters = {}
+            for idx, tower in enumerate(towers):
+                cell = (int(tower.x // cluster_size), int(tower.y // cluster_size))
+                clusters.setdefault(cell, []).append((idx, tower))
+
+            for cell, items in clusters.items():
+                if len(items) == 1:
+                    idx, tower = items[0]
+                    try:
+                        level_surf = SMALL_BUTTON_FONT.render(f"Lv.{tower.level}", True, BLACK)
+                        idx_surf = SMALL_BUTTON_FONT.render(f"#{idx+1}", True, BLACK)
+                        lx = int(tower.x - level_surf.get_width() // 2)
+                        ly = int(tower.y - 48 * SIZE_SCALE)
+                        WIN.blit(level_surf, (lx, ly))
+                        WIN.blit(idx_surf, (lx + level_surf.get_width() + 6, ly))
+                    except Exception:
+                        pass
+                else:
+                    # aggregated marker for multiple towers
+                    avg_x = sum(t.x for _, t in items) / len(items)
+                    avg_y = sum(t.y for _, t in items) / len(items)
+                    count = len(items)
+                    try:
+                        agg_surf = SMALL_BUTTON_FONT.render(f"+{count}", True, (40,40,40))
+                        WIN.blit(agg_surf, (int(avg_x - agg_surf.get_width() // 2), int(avg_y - 40 * SIZE_SCALE)))
+                    except Exception:
+                        pass
 
         # Draw Bullets
         for bullet in bullets:
@@ -1200,17 +1522,29 @@ def main(saved_game=None):
         draw_forest_decorations(WIN)
         
         # --- UI DISPLAY ---
-        # Corner data display
-        money_text = STAT_FONT.render(f"Money: ${money}", True, BLACK)
-        WIN.blit(money_text, (10, 10))
-        health_text = STAT_FONT.render(f"Health: {base_health}%", True, BLACK)
-        WIN.blit(health_text, (10, 40))
-        kill_count_text = STAT_FONT.render(f"Kills: {killcount}", True, BLACK)
-        WIN.blit(kill_count_text, (10, 70))
-        difficulty_text = STAT_FONT.render(f"Difficulty: {difficulty_level}", True, BLACK)
-        WIN.blit(difficulty_text, (10, 100))
-        base_level_text = STAT_FONT.render(f"Base Level: {base_level}", True, BLACK)
-        WIN.blit(base_level_text, (10, 130))
+        # Corner data display with translucent background for readability
+        stat_texts = [
+            STAT_FONT.render(f"Money: ${money}", True, WHITE),
+            STAT_FONT.render(f"Health: {base_health}%", True, WHITE),
+            STAT_FONT.render(f"Kills: {killcount}", True, WHITE),
+            STAT_FONT.render(f"Difficulty: {difficulty_level}", True, WHITE),
+            STAT_FONT.render(f"Base Level: {base_level}", True, WHITE),
+        ]
+        padding = 8
+        text_spacing = 6
+        max_w = max(s.get_width() for s in stat_texts)
+        total_h = sum(s.get_height() for s in stat_texts) + text_spacing * (len(stat_texts)-1)
+        bg_rect = pygame.Rect(6, 6, max_w + padding*2, total_h + padding*2)
+        # translucent background
+        bg_surf = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+        bg_surf.fill((20, 20, 20, 180))
+        WIN.blit(bg_surf, (bg_rect.x, bg_rect.y))
+        # draw texts
+        ty = bg_rect.y + padding
+        for s in stat_texts:
+            WIN.blit(s, (bg_rect.x + padding, ty))
+            ty += s.get_height() + text_spacing
+
         # Game Timer (mm:ss)
         elapsed_seconds = int(elapsed_time_ms // 1000)
         mins = elapsed_seconds // 60
@@ -1218,16 +1552,25 @@ def main(saved_game=None):
         timer_text = STAT_FONT.render(f"Time: {mins:02d}:{secs:02d}", True, BLACK)
         WIN.blit(timer_text, (10, 160))
         
-        # Draw Speed Control
-        pygame.draw.rect(WIN, (100, 100, 100), speed_minus_button)
-        pygame.draw.rect(WIN, (150, 150, 150), speed_minus_button, 2)
-        minus_text = FONT.render("-", True, WHITE)
-        WIN.blit(minus_text, (speed_minus_button.x + 12, speed_minus_button.y + 8))
-        
-        pygame.draw.rect(WIN, (100, 100, 100), speed_plus_button)
-        pygame.draw.rect(WIN, (150, 150, 150), speed_plus_button, 2)
-        plus_text = FONT.render("+", True, WHITE)
-        WIN.blit(plus_text, (speed_plus_button.x + 10, speed_plus_button.y + 5))
+        # Draw Speed Control (hidden while upgrade panel is open)
+        if not upgrade_mode:
+            # semi-transparent speed minus
+            s_minus = pygame.Surface((speed_minus_button.width, speed_minus_button.height), pygame.SRCALPHA)
+            s_minus.fill((100, 100, 100, 160))
+            WIN.blit(s_minus, (speed_minus_button.x, speed_minus_button.y))
+            pygame.draw.rect(WIN, (150, 150, 150), speed_minus_button, 2)
+            minus_text = FONT.render("-", True, WHITE)
+            WIN.blit(minus_text, (speed_minus_button.x + 15, speed_minus_button.y + 5))
+            # semi-transparent speed plus
+            s_plus = pygame.Surface((speed_plus_button.width, speed_plus_button.height), pygame.SRCALPHA)
+            s_plus.fill((100, 100, 100, 160))
+            WIN.blit(s_plus, (speed_plus_button.x, speed_plus_button.y))
+            pygame.draw.rect(WIN, (150, 150, 150), speed_plus_button, 2)
+            plus_text = FONT.render("+", True, WHITE)
+            WIN.blit(plus_text, (speed_plus_button.x + 12, speed_plus_button.y + 6))
+
+            speed_display = FONT.render(f"Speed: {game_speed:.2f}x", True, BLACK)
+            WIN.blit(speed_display, (WIDTH - 200, 55))
 
         # Draw on-screen pause button
         try:
@@ -1235,49 +1578,72 @@ def main(saved_game=None):
         except Exception:
             pass
         
-        speed_display = FONT.render(f"Speed: {game_speed:.2f}x", True, BLACK)
-        WIN.blit(speed_display, (WIDTH - 200, 55))
-        
         # Draw Tower Selection Buttons
         button1_color = BLUE if selected_tower_type == 1 else (100, 100, 100)
         button2_color = (150, 50, 200) if selected_tower_type == 2 else (100, 100, 100)
         upgrade_button_color = (255, 200, 0) if upgrade_mode else (100, 100, 100)
         
-        pygame.draw.rect(WIN, button1_color, button1_rect)
-        pygame.draw.rect(WIN, button2_color, button2_rect)
-        pygame.draw.rect(WIN, upgrade_button_color, upgrade_button_rect)
-        
+        # semi-transparent tower selection buttons
+        s_b1 = pygame.Surface((button1_rect.width, button1_rect.height), pygame.SRCALPHA)
+        s_b1.fill((*button1_color, 160))
+        WIN.blit(s_b1, (button1_rect.x, button1_rect.y))
+        s_b2 = pygame.Surface((button2_rect.width, button2_rect.height), pygame.SRCALPHA)
+        s_b2.fill((*button2_color, 160))
+        WIN.blit(s_b2, (button2_rect.x, button2_rect.y))
+        s_up = pygame.Surface((upgrade_button_rect.width, upgrade_button_rect.height), pygame.SRCALPHA)
+        s_up.fill((*upgrade_button_color, 160))
+        WIN.blit(s_up, (upgrade_button_rect.x, upgrade_button_rect.y))
+
         # Button borders
         pygame.draw.rect(WIN, WHITE, button1_rect, 2)
         pygame.draw.rect(WIN, WHITE, button2_rect, 2)
         pygame.draw.rect(WIN, WHITE, upgrade_button_rect, 2)
 
-        text1 = FONT.render("Tower 1", True, WHITE)
-        text2 = FONT.render("Tower 2", True, WHITE)
-        upgrade_text = FONT.render("Upgrade", True, BLACK)
+        text1 = SMALL_BUTTON_FONT.render("Tower 1", True, WHITE)
+        text2 = SMALL_BUTTON_FONT.render("Tower 2", True, WHITE)
+        upgrade_text = SMALL_BUTTON_FONT.render("Upgrade", True, BLACK)
 
         # center text inside buttons for better readability
         WIN.blit(text1, (button1_rect.x + button1_rect.width//2 - text1.get_width()//2, button1_rect.y + button1_rect.height//2 - text1.get_height()//2))
         WIN.blit(text2, (button2_rect.x + button2_rect.width//2 - text2.get_width()//2, button2_rect.y + button2_rect.height//2 - text2.get_height()//2))
         WIN.blit(upgrade_text, (upgrade_button_rect.x + upgrade_button_rect.width//2 - upgrade_text.get_width()//2, upgrade_button_rect.y + upgrade_button_rect.height//2 - upgrade_text.get_height()//2))
 
-        # Error/Status messages
-        if error_timer > 0:
-            error_surf = FONT.render(error_message, True, (100, 100, 255))
-            WIN.blit(error_surf, (WIDTH // 2 - error_surf.get_width() // 2, 50))
-            error_timer -= 1
+        # Transfer any legacy single-slot error into the queue and clear it
+        if error_message and error_timer > 0:
+            push_error(error_message, error_timer)
+            error_message = ""
+            error_timer = 0
+
+        # Draw queued error/status messages stacked so they don't overlap
+        if error_queue:
+            start_y = 90 + (20 if upgrade_mode else 0)
+            for i, e in enumerate(list(error_queue)):
+                try:
+                    error_surf = FONT.render(e["msg"], True, (100, 100, 255))
+                    WIN.blit(error_surf, (WIDTH // 2 - error_surf.get_width() // 2 + 15, start_y + i * (error_surf.get_height() + 6)))
+                except Exception:
+                    pass
+                e["timer"] -= 1
+            # remove expired messages (in-place)
+            error_queue[:] = [x for x in error_queue if x["timer"] > 0]
 
         if upgrade_mode:
             upgrade_instructions = UPGRADE_FONT.render("UPGRADE MODE: Use panel to the right or click map", True, (255, 100, 100))
-            WIN.blit(upgrade_instructions, (WIDTH // 2 - upgrade_instructions.get_width() // 2 - 20, 10))
+            WIN.blit(upgrade_instructions, (WIDTH // 2 - upgrade_instructions.get_width() // 2 - 10, 50))
             
             if base_level < 6:
                 base_upgrade_cost = base_level * 100
                 base_cost_text = UPGRADE_FONT.render(f"Base Upgrade: ${base_upgrade_cost}", True, (100, 100, 255))
-                WIN.blit(base_cost_text, (WIDTH // 2 - base_cost_text.get_width() // 2 - 20, 35))
+                WIN.blit(base_cost_text, (WIDTH // 2 - base_cost_text.get_width() // 2 - 10, 70))
             else:
                 base_max_text = UPGRADE_FONT.render("Base at MAX LEVEL", True, (100, 100, 255))
-                WIN.blit(base_max_text, (WIDTH // 2 - base_max_text.get_width() // 2 - 20, 35))
+                WIN.blit(base_max_text, (WIDTH // 2 - base_max_text.get_width() // 2 - 10, 70))
+            # Show current max towers allowance
+            try:
+                max_towers_text = UPGRADE_FONT.render(f"Max Towers: {current_max_towers}", True, (200, 200, 120))
+                WIN.blit(max_towers_text, (WIDTH // 2 - max_towers_text.get_width() // 2 - 10, 90))
+            except Exception:
+                pass
             
             # Show base level in upgrade mode
             base_level_upgrade_display = UPGRADE_FONT.render(f"Base Lv.{base_level}", True, (0, 0, 0))
@@ -1287,40 +1653,124 @@ def main(saved_game=None):
             panel_rect = pygame.Rect(WIDTH-220, 80, 210, HEIGHT-160)
             pygame.draw.rect(WIN, (40,40,40), panel_rect)
             pygame.draw.rect(WIN, (200,180,100), panel_rect, 2)
-            title = UPGRADE_FONT.render("Towers", True, (220,180,100))
+            title = UPGRADE_FONT.render("Upgrade Menu", True, (220,180,100))
             WIN.blit(title, (panel_rect.x + 10, panel_rect.y + 6))
+            # draw a compact base button (no info displayed in panel)
+            base_button_rect = pygame.Rect(panel_rect.x + panel_rect.width - 70, panel_rect.y + 8, 58, 22)
+            pygame.draw.rect(WIN, (90,90,120), base_button_rect)
+            pygame.draw.rect(WIN, (200,180,100), base_button_rect, 2)
+            base_btn_txt = UPGRADE_FONT.render("Base", True, WHITE)
+            WIN.blit(base_btn_txt, (base_button_rect.x + base_button_rect.width//2 - base_btn_txt.get_width()//2, base_button_rect.y + 3))
+
             panel_y = panel_rect.y + 36
-            panel_entry_h = 56
-            for idx, tower in enumerate(towers):
-                entry_rect = pygame.Rect(panel_rect.x + 10, panel_y + idx*panel_entry_h, panel_rect.width - 20, 50)
-                color = (70,70,70) if selected_panel_tower != idx else (100,120,160)
+            # compute per-entry raw heights (variable button sizes based on level), no scrolling
+            entries = [("tower", t) for t in towers]
+            raw_heights = []
+            for kind, t in entries:
+                lvl = getattr(t, "level", 1)
+                raw_heights.append(44 + (lvl - 1) * 22)
+            action_space = 200
+            available_h = max(0, panel_rect.height - 36 - action_space)
+            total_raw = sum(raw_heights) if raw_heights else 1
+            scale = min(1.0, available_h / total_raw) if total_raw > 0 else 1.0
+            entry_heights = [max(28, int(h * scale)) for h in raw_heights]
+            # draw entries sequentially top-down (no scroll)
+            y_cursor = panel_rect.y + 36
+            for idx, ((kind, t), h) in enumerate(zip(entries, entry_heights)):
+                entry_rect = pygame.Rect(panel_rect.x + 10, y_cursor, panel_rect.width - 20, max(28, h - 6))
+                tower = t
+                tower_selected = (isinstance(selected_panel_tower, int) and selected_panel_tower == idx)
+                color = (100,120,160) if tower_selected else (70,70,70)
                 pygame.draw.rect(WIN, color, entry_rect)
                 pygame.draw.rect(WIN, (200,180,100), entry_rect, 2)
-                # draw small tower image
                 try:
-                    mini = pygame.transform.scale(tower.image, (40,40))
+                    img_size = max(12, min(36, h - 12))
+                    mini = pygame.transform.scale(tower.image, (img_size, img_size))
                     WIN.blit(mini, (entry_rect.x + 6, entry_rect.y + 5))
                 except Exception:
                     pass
-                txt = UPGRADE_FONT.render(f"{idx+1}. Lv{tower.level} Type{tower.tower_type}", True, WHITE)
-                WIN.blit(txt, (entry_rect.x + 54, entry_rect.y + 12))
-            # Action buttons when a tower is selected
-            if selected_panel_tower is not None and 0 <= selected_panel_tower < len(towers):
-                upgrade_btn = pygame.Rect(panel_rect.x+10, panel_rect.y+panel_rect.height-120, panel_rect.width-20, 40)
-                type1_btn = pygame.Rect(panel_rect.x+10, panel_rect.y+panel_rect.height-60, (panel_rect.width-30)//2, 40)
-                type2_btn = pygame.Rect(panel_rect.x+20+(panel_rect.width-30)//2, panel_rect.y+panel_rect.height-60, (panel_rect.width-30)//2, 40)
-                pygame.draw.rect(WIN, (100,170,100), upgrade_btn)
-                pygame.draw.rect(WIN, (150,150,150), type1_btn)
-                pygame.draw.rect(WIN, (150,150,150), type2_btn)
-                pygame.draw.rect(WIN, (200,180,100), upgrade_btn, 2)
-                pygame.draw.rect(WIN, (200,180,100), type1_btn, 2)
-                pygame.draw.rect(WIN, (200,180,100), type2_btn, 2)
-                up_txt = UPGRADE_FONT.render("Upgrade Level", True, WHITE)
+                txt = UPGRADE_FONT.render(f"Tower #{idx+1}  Lv.{tower.level}", True, WHITE)
+                WIN.blit(txt, (entry_rect.x + 12 + img_size, entry_rect.y + max(4, (entry_rect.height - txt.get_height())//2)))
+                y_cursor += h
+
+
+
+            # Popup detail window when an entry was clicked
+            if popup_open and popup_target is not None:
+                px_w, px_h = 520, 360
+                px_x = WIDTH//2 - px_w//2 - 100
+                px_y = HEIGHT//2 - px_h//2
+                popup_rect = pygame.Rect(px_x, px_y, px_w, px_h)
+                pygame.draw.rect(WIN, (30,30,30), popup_rect)
+                pygame.draw.rect(WIN, (200,180,100), popup_rect, 2)
+                # prepare button geometry first so info area can avoid overlap
+                pb_h = 36
+                upgrade_rect = pygame.Rect(px_x + 12, px_y + px_h - pb_h - 14, px_w - 24, pb_h)
+                row2_y = upgrade_rect.y - pb_h - 8
+                row1_y = row2_y - pb_h - 8
+                col_w = (px_w - 36)//2
+                delete_rect = pygame.Rect(px_x + 12, row1_y, col_w, pb_h)
+                downgrade_rect = pygame.Rect(px_x + 24 + col_w, row1_y, col_w, pb_h)
+                type1_rect = pygame.Rect(px_x + 12, row2_y, col_w, pb_h)
+                type2_rect = pygame.Rect(px_x + 24 + col_w, row2_y, col_w, pb_h)
+                # title and info (render info into a reserved area above buttons so it never overlaps)
+                title_surf = None
+                if popup_target[0] == "base":
+                    title_surf = UPGRADE_FONT.render("Base Details", True, WHITE)
+                    lines = [f"Base Level: {base_level}", f"Next Upgrade Cost: ${base_level*100 if base_level<6 else 0}"]
+                else:
+                    tidx = popup_target[1]
+                    tower = towers[tidx] if 0 <= tidx < len(towers) else None
+                    title_surf = UPGRADE_FONT.render(f"Tower #{tidx+1} Details", True, WHITE)
+                    if tower:
+                        # build detailed info lines
+                        lines = [f"Level: {tower.level}", f"Damage: {getattr(tower,'damage','?')}", f"Range: {getattr(tower,'range','?')}", f"Cooldown: {getattr(tower,'base_cooldown','?')}", f"Type: {getattr(tower,'tower_type','?')}", f"Cost: ${getattr(tower,'cost','?')}"]
+                    else:
+                        lines = ["(No tower)"]
+                # draw title
+                if title_surf is not None:
+                    WIN.blit(title_surf, (px_x + 12, px_y + 8))
+                # compute available space for info (above first row of buttons) and clamp lines
+                info_start_y = px_y + 40
+                info_end_y = row1_y - 8
+                info_h = max(0, info_end_y - info_start_y)
+                line_h = UPGRADE_FONT.get_height() + 4
+                max_lines = max(0, info_h // line_h)
+                draw_lines = lines[:max_lines]
+                if len(lines) > max_lines and max_lines > 0:
+                    if max_lines >= 1:
+                        draw_lines = lines[:max_lines-1] + ["..."]
+                    else:
+                        draw_lines = ["..."]
+                for i,ln in enumerate(draw_lines):
+                    surf = UPGRADE_FONT.render(ln, True, WHITE)
+                    WIN.blit(surf, (px_x + 12, info_start_y + i * (surf.get_height() + 4)))
+                # draw row buttons
+                pygame.draw.rect(WIN, (180,60,60), delete_rect, border_radius=6)
+                pygame.draw.rect(WIN, (200,180,100), delete_rect, 2, border_radius=6)
+                pygame.draw.rect(WIN, (200,150,50), downgrade_rect, border_radius=6)
+                pygame.draw.rect(WIN, (200,180,100), downgrade_rect, 2, border_radius=6)
+                if popup_target[0] == "base":
+                    pygame.draw.rect(WIN, (90,90,90), type1_rect, border_radius=6)
+                    pygame.draw.rect(WIN, (90,90,90), type2_rect, border_radius=6)
+                else:
+                    pygame.draw.rect(WIN, (150,150,150), type1_rect, border_radius=6)
+                    pygame.draw.rect(WIN, (150,150,150), type2_rect, border_radius=6)
+                pygame.draw.rect(WIN, (200,180,100), type1_rect, 2, border_radius=6)
+                pygame.draw.rect(WIN, (200,180,100), type2_rect, 2, border_radius=6)
+                d_txt = UPGRADE_FONT.render("Delete", True, WHITE)
+                dn_txt = UPGRADE_FONT.render("Downgrade", True, WHITE)
                 t1_txt = UPGRADE_FONT.render("Type 1", True, WHITE)
                 t2_txt = UPGRADE_FONT.render("Type 2", True, WHITE)
-                WIN.blit(up_txt, (upgrade_btn.x + upgrade_btn.width//2 - up_txt.get_width()//2, upgrade_btn.y + 8))
-                WIN.blit(t1_txt, (type1_btn.x + type1_btn.width//2 - t1_txt.get_width()//2, type1_btn.y + 8))
-                WIN.blit(t2_txt, (type2_btn.x + type2_btn.width//2 - t2_txt.get_width()//2, type2_btn.y + 8))
+                WIN.blit(d_txt, (delete_rect.x + delete_rect.width//2 - d_txt.get_width()//2, delete_rect.y + 6))
+                WIN.blit(dn_txt, (downgrade_rect.x + downgrade_rect.width//2 - dn_txt.get_width()//2, downgrade_rect.y + 6))
+                WIN.blit(t1_txt, (type1_rect.x + type1_rect.width//2 - t1_txt.get_width()//2, type1_rect.y + 6))
+                WIN.blit(t2_txt, (type2_rect.x + type2_rect.width//2 - t2_txt.get_width()//2, type2_rect.y + 6))
+                # draw upgrade
+                pygame.draw.rect(WIN, (100,170,100), upgrade_rect, border_radius=6)
+                pygame.draw.rect(WIN, (200,180,100), upgrade_rect, 2, border_radius=6)
+                pu_txt = UPGRADE_FONT.render("Upgrade", True, WHITE)
+                WIN.blit(pu_txt, (upgrade_rect.x + upgrade_rect.width//2 - pu_txt.get_width()//2, upgrade_rect.y + 6))
         
         # Check for Game Over
         if base_health <= 0:

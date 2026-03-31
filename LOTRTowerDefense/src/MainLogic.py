@@ -604,6 +604,10 @@ def main_menu():
         subtitle_text = subtitle_font.render("TOWER DEFENSE", True, (180, 140, 70))
         WIN.blit(subtitle_text, (WIDTH//2 - subtitle_text.get_width()//2, HEIGHT//3 + 40))
 
+        # Ownership / credit text at bottom of title screen
+        ownership_text = SMALL_BUTTON_FONT.render("Yicheng Deng, Logan Bywater, Quinn Dawson, & Jamie Duersch | Group6 | 2026 ", True, (200, 200, 200))
+        WIN.blit(ownership_text, (WIDTH//2 - ownership_text.get_width()//2, HEIGHT - 36))
+
         # Get mouse position for button hover
         mouse_pos = pygame.mouse.get_pos()
         mouse_over_play = play_button.collidepoint(mouse_pos)
